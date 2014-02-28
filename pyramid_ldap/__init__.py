@@ -1,12 +1,15 @@
 try:
-    import ldap
-except ImportError: # pragma: no cover
+    import ldap3
+    from ldap3 import Server, Connection
+    from ldap3 import AUTH_SIMPLE, STRATEGY_SYNC, STRATEGY_ASYNC_THREADED, SEARCH_SCOPE_WHOLE_SUBTREE, GET_ALL_INFO
+    from ldap3.abstraction import ObjectDef, AttrDef
+except ImportError:  # pragma: no cover
     # this is for benefit of being able to build the docs on rtd.org
     class ldap(object):
-        LDAPError = Exception
-        SCOPE_ONELEVEL = None
-        SCOPE_SUBTREE = None
-        
+        LDAPException = Exception
+        SEARCH_SCOPE_SINGLE_LEVEL = None
+        SEARCH_SCOPE_WHOLE_SUBTREE = None
+
 import logging
 import pprint
 import time
@@ -14,19 +17,21 @@ import time
 from pyramid.exceptions import ConfigurationError
 from pyramid.compat import bytes_
 
-try:
-    from ldappool import ConnectionManager
-except ImportError as e: # pragma: no cover
-    class ConnectionManager(object):
-        def __init__(self, *arg, **kw):
-            # this is for benefit of being able to build the docs on rtd.org
-            raise e
+# try:
+#     from ldappool import ConnectionManager
+# except ImportError as e: # pragma: no cover
+#     class ConnectionManager(object):
+#         def __init__(self, *arg, **kw):
+#             # this is for benefit of being able to build the docs on rtd.org
+#             raise e
 
 logger = logging.getLogger(__name__)
+
 
 class _LDAPQuery(object):
     """ Represents an LDAP query.  Provides rudimentary in-RAM caching of
     query results."""
+
     def __init__(self, base_dn, filter_tmpl, scope, cache_period):
         self.base_dn = base_dn
         self.filter_tmpl = filter_tmpl
@@ -37,7 +42,7 @@ class _LDAPQuery(object):
 
     def __str__(self):
         return ('base_dn=%(base_dn)s, filter_tmpl=%(filter_tmpl)s, '
-                'scope=%(scope)s, cache_period=%(cache_period)s' % 
+                'scope=%(scope)s, cache_period=%(cache_period)s' %
                 self.__dict__)
 
     def query_cache(self, cache_key):
@@ -47,9 +52,9 @@ class _LDAPQuery(object):
 
         if ts > self.last_timeslice:
             logger.debug('dumping cache; now ts: %r, last_ts: %r' % (
-                ts, 
+                ts,
                 self.last_timeslice)
-                )
+            )
             self.cache = {}
             self.last_timeslice = ts
 
@@ -59,19 +64,19 @@ class _LDAPQuery(object):
 
     def execute(self, conn, **kw):
         cache_key = (
-            bytes_(self.base_dn % kw, 'utf-8'), 
+            bytes_(self.base_dn % kw, 'utf-8'),
             self.scope,
             bytes_(self.filter_tmpl % kw, 'utf-8')
-            )
+        )
 
         logger.debug('searching for %r' % (cache_key,))
 
         if self.cache_period:
             result = self.query_cache(cache_key)
             if result is not None:
-                logger.debug('result for %r retrieved from cache' % 
+                logger.debug('result for %r retrieved from cache' %
                              (cache_key,)
-                             )
+                )
             else:
                 result = conn.search_s(*cache_key)
                 self.cache[cache_key] = result
@@ -82,16 +87,19 @@ class _LDAPQuery(object):
 
         return result
 
+
 def _timeslice(period, when=None):
-    if when is None: # pragma: no cover
-        when =  time.time()
+    if when is None:  # pragma: no cover
+        when = time.time()
     return when - (when % period)
-    
+
+
 class Connector(object):
     """ Provides API methods for accessing LDAP authentication information."""
-    def __init__(self, registry, manager):
+    # def __init__(self, registry, manager):
+    def __init__(self, registry, connection):
         self.registry = registry
-        self.manager = manager
+        self.connection = connection
 
     def authenticate(self, login, password):
         """ Given a login name and a password, return a tuple of ``(dn,
@@ -116,23 +124,29 @@ class Connector(object):
         :exc:`pyramid.exceptions.ConfiguratorError`."""
         if password == '':
             return None
-            
-        with self.manager.connection() as conn:
-            search = getattr(self.registry, 'ldap_login_query', None)
-            if search is None:
-                raise ConfigurationError(
-                    'ldap_set_login_query was not called during setup')
-            
-            result = search.execute(conn, login=login, password=password)
-            if len(result) == 1:
-                login_dn = result[0][0]
-            else:
-                return None
+
+        #with self.manager.connection() as conn:
+        #with self.connection as conn:
+        conn = self.connection
+        search = getattr(self.registry, 'ldap_login_query', None)
+        if search is None:
+            raise ConfigurationError(
+                'ldap_set_login_query was not called during setup')
+
+        result = search.execute(conn, login=login, password=password)
+        if len(result) == 1:
+            login_dn = result[0][0]
+        else:
+            return None
         try:
-            with self.manager.connection(login_dn, password) as conn:
-                # must invoke the __enter__ of this thing for it to connect
-                return _ldap_decode(result[0])
-        except ldap.LDAPError:
+            #with self.manager.connection(login_dn, password) as conn:
+            #with self.connection(user=login_dn, password=password) as conn:
+            conn.user=login_dn
+            conn.password=password
+            conn.bind()
+            # must invoke the __enter__ of this thing for it to connect
+            return _ldap_decode(result[0])
+        except ldap3.LDAPException:
             logger.debug('Exception in authenticate with login %r' % login,
                          exc_info=True)
             return None
@@ -153,27 +167,30 @@ class Connector(object):
         called, using this function will raise an
         :exc:`pyramid.exceptions.ConfiguratorError`
         """
-        with self.manager.connection() as conn:
-            search = getattr(self.registry, 'ldap_groups_query', None)
-            if search is None:
-                raise ConfigurationError(
-                    'set_ldap_groups_query was not called during setup')
-            try:
-                result = search.execute(conn, userdn=userdn)
-                return _ldap_decode(result)
-            except ldap.LDAPError:
-                logger.debug(
-                    'Exception in user_groups with userdn %r' % userdn,
-                    exc_info=True)
-                return None
+        #with self.connection as conn:
+        #with self.connection as conn:
+        conn = self.connection
+        search = getattr(self.registry, 'ldap_groups_query', None)
+        if search is None:
+            raise ConfigurationError(
+                'set_ldap_groups_query was not called during setup')
+        try:
+            result = search.execute(conn, userdn=userdn)
+            return _ldap_decode(result)
+        except ldap3.LDAPException:
+            logger.debug(
+                'Exception in user_groups with userdn %r' % userdn,
+                exc_info=True)
+            return None
 
-def ldap_set_login_query(config, base_dn, filter_tmpl, 
-                          scope=ldap.SCOPE_ONELEVEL, cache_period=0):
+
+def ldap_set_login_query(config, base_dn, filter_tmpl,
+                         scope=ldap3.SEARCH_SCOPE_SINGLE_LEVEL, cache_period=0):
     """ Configurator method to set the LDAP login search.  ``base_dn`` is the
     DN at which to begin the search.  ``filter_tmpl`` is a string which can
     be used as an LDAP filter: it should contain the replacement value
     ``%(login)s``.  Scope is any valid LDAP scope value
-    (e.g. ``ldap.SCOPE_ONELEVEL``).  ``cache_period`` is the number of seconds
+    (e.g. ``ldap.SEARCH_SCOPE_SINGLE_LEVEL``).  ``cache_period`` is the number of seconds
     to cache login search results; if it is 0, login search results will not
     be cached.
 
@@ -182,13 +199,14 @@ def ldap_set_login_query(config, base_dn, filter_tmpl,
         config.set_ldap_login_query(
             base_dn='CN=Users,DC=example,DC=com',
             filter_tmpl='(sAMAccountName=%(login)s)',
-            scope=ldap.SCOPE_ONELEVEL,
+            scope=ldap.SEARCH_SCOPE_SINGLE_LEVEL,
             )
 
     The registered search must return one and only one value to be considered
     a valid login.
     """
     query = _LDAPQuery(base_dn, filter_tmpl, scope, cache_period)
+
     def register():
         config.registry.ldap_login_query = query
 
@@ -197,17 +215,18 @@ def ldap_set_login_query(config, base_dn, filter_tmpl,
         None,
         str(query),
         'pyramid_ldap login query'
-        )
-        
+    )
+
     config.action('ldap-set-login-query', register, introspectables=(intr,))
 
-def ldap_set_groups_query(config, base_dn, filter_tmpl, 
-                           scope=ldap.SCOPE_SUBTREE, cache_period=0):
+
+def ldap_set_groups_query(config, base_dn, filter_tmpl,
+                          scope=ldap3.SEARCH_SCOPE_WHOLE_SUBTREE, cache_period=0):
     """ Configurator method to set the LDAP groups search.  ``base_dn`` is
     the DN at which to begin the search.  ``filter_tmpl`` is a string which
     can be used as an LDAP filter: it should contain the replacement value
     ``%(userdn)s``.  Scope is any valid LDAP scope value
-    (e.g. ``ldap.SCOPE_SUBTREE``).  ``cache_period`` is the number of seconds
+    (e.g. ``ldap.SEARCH_SCOPE_WHOLE_SUBTREE``).  ``cache_period`` is the number of seconds
     to cache groups search results; if it is 0, groups search results will
     not be cached.
 
@@ -216,23 +235,26 @@ def ldap_set_groups_query(config, base_dn, filter_tmpl,
         config.set_ldap_groups_query(
             base_dn='CN=Users,DC=example,DC=com',
             filter_tmpl='(&(objectCategory=group)(member=%(userdn)s))'
-            scope=ldap.SCOPE_SUBTREE,
+            scope=ldap.SEARCH_SCOPE_WHOLE_SUBTREE,
             )
 
     """
     query = _LDAPQuery(base_dn, filter_tmpl, scope, cache_period)
+
     def register():
         config.registry.ldap_groups_query = query
+
     intr = config.introspectable(
         'pyramid_ldap groups query',
         None,
         str(query),
         'pyramid_ldap groups query'
-        )
+    )
     config.action('ldap-set-groups-query', register, introspectables=(intr,))
 
-def ldap_setup(config, uri, bind=None, passwd=None, pool_size=10, retry_max=3,
-               retry_delay=.1, use_tls=False, timeout=-1, use_pool=True):
+
+def ldap_setup(config, host, port=389, useSsl=False, allowedReferralHosts=None, getInfo=None,
+               tls=None):
     """ Configurator method to set up an LDAP connection pool.
 
     - **uri**: ldap server uri **[mandatory]**
@@ -249,16 +271,18 @@ def ldap_setup(config, uri, bind=None, passwd=None, pool_size=10, retry_max=3,
        each time. **default: True**
     """
     vals = dict(
-        uri=uri, bind=bind, passwd=passwd, size=pool_size, 
-        retry_max=retry_max, retry_delay=retry_delay, use_tls=use_tls, 
-        timeout=timeout, use_pool=use_pool
-        )
+        host=host, port=port, useSsl=useSsl, allowedReferralHosts=allowedReferralHosts, getInfo=getInfo,
+        tls=tls
+    )
 
-    manager = ConnectionManager(**vals)
+    server = Server(**vals)
+    connection = Connection(server)
+    # manager = ConnectionManager(**vals)
 
     def get_connector(request):
         registry = request.registry
-        return Connector(registry, manager)
+        return Connector(registry, connection)
+        #return Connector(registry, manager)
 
     config.set_request_property(get_connector, 'ldap_connector', reify=True)
 
@@ -267,8 +291,9 @@ def ldap_setup(config, uri, bind=None, passwd=None, pool_size=10, retry_max=3,
         None,
         pprint.pformat(vals),
         'pyramid_ldap setup'
-        )
+    )
     config.action('ldap-setup', None, introspectables=(intr,))
+
 
 def get_ldap_connector(request):
     """ Return the LDAP connector attached to the request.  If
@@ -280,6 +305,7 @@ def get_ldap_connector(request):
             'You must call Configurator.ldap_setup during setup '
             'to use an ldap connector')
     return connector
+
 
 def groupfinder(userdn, request):
     """ A groupfinder implementation useful in conjunction with
@@ -296,10 +322,12 @@ def groupfinder(userdn, request):
         group_dns.append(dn)
     return group_dns
 
+
 def _ldap_decode(result):
     """ Decode (recursively) strings in the result data structure to Unicode
     using the utf-8 encoding """
     return _Decoder().decode(result)
+
 
 class _Decoder(object):
     """
@@ -310,16 +338,14 @@ class _Decoder(object):
     python-ldap.
     """
 
-    ldap = ldap
+    ldap = ldap3
 
     def __init__(self, encoding='utf-8'):
         self.encoding = encoding
 
     def decode(self, value):
         try:
-            if isinstance(value, str):
-                value = value.decode(self.encoding)
-            elif isinstance(value, list):
+            if isinstance(value, list):
                 value = self._decode_list(value)
             elif isinstance(value, tuple):
                 value = tuple(self._decode_list(value))
@@ -337,12 +363,15 @@ class _Decoder(object):
         # Attribute dictionaries should be case-insensitive. python-ldap
         # defines this, although for some reason, it doesn't appear to use it
         # for search results.
-        decoded = self.ldap.cidict.cidict()
+        # decoded = self.ldap.cidict.cidict()
+        decoded = ObjectDef()
 
-        for k, v in value.iteritems():
-            decoded[self.decode(k)] = self.decode(v)
+        for k, v in value.items():
+            decoded += AttrDef(self.decode(v), key=self.decode(k))
+            #decoded[self.decode(k)] = self.decode(v)
 
         return decoded
+
 
 def includeme(config):
     """ Set up Configurator methods for pyramid_ldap """
