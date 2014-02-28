@@ -11,7 +11,8 @@ requires = [
     ]
 if not 'READTHEDOCS' in os.environ:
     # hail mary for readthedocs
-    requires.extend(['ldappool', 'python-ldap'])
+    # requires.extend(['ldappool', 'python3-ldap'])
+    requires.extend(['python3-ldap'])
 
 sampleapp_extras = [
     'waitress',
