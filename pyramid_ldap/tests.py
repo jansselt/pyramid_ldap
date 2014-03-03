@@ -228,19 +228,19 @@ class Test_LDAPQuery(unittest.TestCase):
         conn = DummyConnection('abc')
         result = inst.execute(conn, login='foo')
         self.assertEqual(result, 'abc')
-        self.assertEqual(conn.arg, (b'foo', None, b'foo'))
+        self.assertEqual(conn.arg, ('foo', 'foo', None))
 
     def test_execute_with_cache_period_miss(self):
         inst = self._makeOne('%(login)s', '%(login)s', None, 1)
         conn = DummyConnection('abc')
         result = inst.execute(conn, login='foo')
         self.assertEqual(result, 'abc')
-        self.assertEqual(conn.arg, (b'foo', None, b'foo'))
+        self.assertEqual(conn.arg, ('foo', 'foo', None))
 
     def test_execute_with_cache_period_hit(self):
         inst = self._makeOne('%(login)s', '%(login)s', None, 1)
         inst.last_timeslice = sys.maxsize
-        inst.cache[(b'foo', None, b'foo')] = 'def'
+        inst.cache[('foo', 'foo', None)] = 'def'
         conn = DummyConnection('abc')
         result = inst.execute(conn, login='foo')
         self.assertEqual(result, 'def')
@@ -301,7 +301,7 @@ class DummyConnection(object):
     def __init__(self, result):
         self.result = result
 
-    def search_s(self, *arg):
+    def search(self, *arg):
         self.arg = arg
         return self.result
 

@@ -1,7 +1,8 @@
 try:
     import ldap3
     from ldap3 import Server, Connection
-    from ldap3 import AUTH_SIMPLE, STRATEGY_SYNC, STRATEGY_ASYNC_THREADED, SEARCH_SCOPE_WHOLE_SUBTREE, GET_ALL_INFO
+    from ldap3 import AUTH_SIMPLE, STRATEGY_SYNC, STRATEGY_ASYNC_THREADED, SEARCH_SCOPE_WHOLE_SUBTREE, GET_ALL_INFO, \
+        ALL_ATTRIBUTES, SEARCH_DEREFERENCE_ALWAYS
     from ldap3.abstraction import ObjectDef, AttrDef
 except ImportError:  # pragma: no cover
     # this is for benefit of being able to build the docs on rtd.org
@@ -63,10 +64,18 @@ class _LDAPQuery(object):
         return result
 
     def execute(self, conn, **kw):
+        # cache_key = (
+        #     bytes_(self.base_dn % kw, 'utf-8'),
+        #     self.scope,
+        #     bytes_(self.filter_tmpl % kw, 'utf-8')
+        # )
+
         cache_key = (
-            bytes_(self.base_dn % kw, 'utf-8'),
+            self.base_dn % kw,
+            self.filter_tmpl % kw,
             self.scope,
-            bytes_(self.filter_tmpl % kw, 'utf-8')
+            SEARCH_DEREFERENCE_ALWAYS,
+            ALL_ATTRIBUTES
         )
 
         logger.debug('searching for %r' % (cache_key,))
@@ -78,10 +87,19 @@ class _LDAPQuery(object):
                              (cache_key,)
                 )
             else:
-                result = conn.search_s(*cache_key)
-                self.cache[cache_key] = result
+                #result = conn.search_s(*cache_key)
+                search_result = conn.search(*cache_key)
+                if search_result:
+                    result = conn.response
+                #self.cache[cache_key] = result
+                    self.cache[cache_key] = result
         else:
-            result = conn.search_s(*cache_key)
+            #result = conn.search_s(*cache_key)
+            search_result = conn.search(*cache_key)
+            if search_result:
+                result = conn.response
+
+
 
         logger.debug('search result: %r' % (result,))
 
@@ -128,6 +146,7 @@ class Connector(object):
         #with self.manager.connection() as conn:
         #with self.connection as conn:
         conn = self.connection
+        conn.open()
         search = getattr(self.registry, 'ldap_login_query', None)
         if search is None:
             raise ConfigurationError(
@@ -135,14 +154,14 @@ class Connector(object):
 
         result = search.execute(conn, login=login, password=password)
         if len(result) == 1:
-            login_dn = result[0][0]
+            login_dn = result[0]['dn']
         else:
             return None
         try:
             #with self.manager.connection(login_dn, password) as conn:
             #with self.connection(user=login_dn, password=password) as conn:
-            conn.user=login_dn
-            conn.password=password
+            conn.user = login_dn
+            conn.password = password
             conn.bind()
             # must invoke the __enter__ of this thing for it to connect
             return _ldap_decode(result[0])
@@ -254,7 +273,7 @@ def ldap_set_groups_query(config, base_dn, filter_tmpl,
 
 
 def ldap_setup(config, host, port=389, useSsl=False, allowedReferralHosts=None, getInfo=None,
-               tls=None):
+               tls=None, authentication=None):
     """ Configurator method to set up an LDAP connection pool.
 
     - **uri**: ldap server uri **[mandatory]**
@@ -276,7 +295,7 @@ def ldap_setup(config, host, port=389, useSsl=False, allowedReferralHosts=None, 
     )
 
     server = Server(**vals)
-    connection = Connection(server)
+    connection = Connection(server, authentication=authentication)
     # manager = ConnectionManager(**vals)
 
     def get_connector(request):
