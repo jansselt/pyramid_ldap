@@ -16,15 +16,6 @@ import pprint
 import time
 
 from pyramid.exceptions import ConfigurationError
-from pyramid.compat import bytes_
-
-# try:
-#     from ldappool import ConnectionManager
-# except ImportError as e: # pragma: no cover
-#     class ConnectionManager(object):
-#         def __init__(self, *arg, **kw):
-#             # this is for benefit of being able to build the docs on rtd.org
-#             raise e
 
 logger = logging.getLogger(__name__)
 
@@ -64,18 +55,12 @@ class _LDAPQuery(object):
         return result
 
     def execute(self, conn, **kw):
-        # cache_key = (
-        #     bytes_(self.base_dn % kw, 'utf-8'),
-        #     self.scope,
-        #     bytes_(self.filter_tmpl % kw, 'utf-8')
-        # )
-
         cache_key = (
             self.base_dn % kw,
             self.filter_tmpl % kw,
             self.scope,
             SEARCH_DEREFERENCE_ALWAYS,
-            ALL_ATTRIBUTES
+            kw['attributes']
         )
 
         logger.debug('searching for %r' % (cache_key,))
@@ -87,19 +72,18 @@ class _LDAPQuery(object):
                              (cache_key,)
                 )
             else:
-                #result = conn.search_s(*cache_key)
                 search_result = conn.search(*cache_key)
                 if search_result:
                     result = conn.response
-                #self.cache[cache_key] = result
                     self.cache[cache_key] = result
+                else:
+                    result = {}
         else:
-            #result = conn.search_s(*cache_key)
             search_result = conn.search(*cache_key)
             if search_result:
                 result = conn.response
-
-
+            else:
+                result = {}
 
         logger.debug('search result: %r' % (result,))
 
@@ -119,7 +103,7 @@ class Connector(object):
         self.registry = registry
         self.connection = connection
 
-    def authenticate(self, login, password):
+    def authenticate(self, login, password, attributes=ALL_ATTRIBUTES):
         """ Given a login name and a password, return a tuple of ``(dn,
         attrdict)`` if the matching user if the user exists and his password
         is correct.  Otherwise return ``None``.
@@ -152,14 +136,18 @@ class Connector(object):
             raise ConfigurationError(
                 'ldap_set_login_query was not called during setup')
 
-        result = search.execute(conn, login=login, password=password)
-        if len(result) == 1:
-            login_dn = result[0]['dn']
-        else:
+        result = search.execute(conn, login=login, password=password, attributes=attributes)
+        if len(result) > 1:
+            conn.result['description'] = ''
+            conn.result['message'] = 'More than one user in LDAP with this login'
             return None
+        elif len(result) < 1:
+            conn.result['description'] = ''
+            conn.result['message'] = 'No user in LDAP with this login'
+            return None
+        else:
+            login_dn = result[0]['dn']
         try:
-            #with self.manager.connection(login_dn, password) as conn:
-            #with self.connection(user=login_dn, password=password) as conn:
             conn.user = login_dn
             conn.password = password
             conn.bind()
@@ -170,7 +158,7 @@ class Connector(object):
                          exc_info=True)
             return None
 
-    def user_groups(self, userdn):
+    def user_groups(self, userdn, attributes=ALL_ATTRIBUTES):
         """ Given a user DN, return a sequence of LDAP attribute dictionaries
         matching the groups of which the DN is a member.  If the DN does not
         exist, return ``None``.
@@ -194,7 +182,7 @@ class Connector(object):
             raise ConfigurationError(
                 'set_ldap_groups_query was not called during setup')
         try:
-            result = search.execute(conn, userdn=userdn)
+            result = search.execute(conn, userdn=userdn, attributes=attributes)
             return _ldap_decode(result)
         except ldap3.LDAPException:
             logger.debug(
