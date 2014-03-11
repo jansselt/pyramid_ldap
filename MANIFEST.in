@@ -1,0 +1,8 @@
+include *.txt
+include sampleapp.ini
+include tox.ini
+recursive-include docs *.gitignore
+recursive-include docs *.py
+recursive-include docs *.rst
+recursive-include docs Makefile
+recursive-include sampleapp *.pt
