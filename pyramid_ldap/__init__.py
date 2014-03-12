@@ -138,12 +138,12 @@ class Connector(object):
 
         result = search.execute(conn, login=login, password=password, attributes=attributes)
         if len(result) > 1:
-            conn.result['description'] = ''
-            conn.result['message'] = 'More than one user in LDAP with this login'
+            conn.result['description'] = 'invalidCredentials'
+            conn.result['message'] = ''
             return None
         elif len(result) < 1:
-            conn.result['description'] = ''
-            conn.result['message'] = 'No user in LDAP with this login'
+            conn.result['description'] = 'invalidCredentials'
+            conn.result['message'] = ''
             return None
         else:
             login_dn = result[0]['dn']
